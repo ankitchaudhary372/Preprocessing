@@ -8,77 +8,86 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
 # ------------------ PAGE CONFIG ------------------
-st.set_page_config(page_title="ML Preprocessing Tool", layout="wide")
+st.set_page_config(
+    page_title="ML Preprocessing Tool",
+    layout="wide"
+)
 
 st.title("⚙️ Interactive ML Data Preprocessing Tool")
 st.caption("EDA → Cleaning → Transformation → Encoding → Reduction")
 
 # ------------------ FILE UPLOAD ------------------
-file = st.file_uploader("Upload CSV file", type=["csv"])
+file = st.file_uploader("📂 Upload CSV file", type=["csv"])
 
-if file:
-    df = pd.read_csv(file)
-    st.success("Dataset Loaded Successfully")
+if file is not None:
+    try:
+        df = pd.read_csv(file)
+    except Exception as e:
+        st.error(f"❌ Failed to load file: {e}")
+        st.stop()
 
-    # ------------------ BASIC INFO ------------------
+    st.success("✅ Dataset Loaded Successfully")
+
+    # ------------------ DATASET OVERVIEW ------------------
     st.subheader("📊 Dataset Overview")
+
     col1, col2 = st.columns(2)
-    col1.write("Shape:", df.shape)
-    col2.write("Columns:", list(df.columns))
+    col1.markdown(f"**Shape:** {df.shape}")
+    col2.markdown(f"**Columns:** {list(df.columns)}")
 
-    st.dataframe(df.head())
+    st.dataframe(df.head(), use_container_width=True)
 
-    # ------------------ COLUMN TYPES ------------------
+    # ------------------ COLUMN TYPE DETECTION ------------------
     num_cols = df.select_dtypes(include=np.number).columns.tolist()
     cat_cols = df.select_dtypes(exclude=np.number).columns.tolist()
 
-    st.subheader("🧠 Auto Detected Columns")
-    st.write("Numerical:", num_cols)
-    st.write("Categorical:", cat_cols)
+    st.subheader("🧠 Auto-Detected Column Types")
+    st.write("**Numerical Columns:**", num_cols)
+    st.write("**Categorical Columns:**", cat_cols)
 
-    # ------------------ EDA ------------------
-    with st.expander("🔍 Exploratory Data Analysis"):
-        st.write("Missing Values (%)")
-        st.write((df.isnull().mean() * 100).round(2))
+    # ------------------ EDA SECTION ------------------
+    with st.expander("🔍 Exploratory Data Analysis (EDA)"):
+        st.markdown("### Missing Values (%)")
+        missing = (df.isnull().mean() * 100).round(2)
+        st.dataframe(missing)
 
-        st.write("Statistical Summary")
-        st.dataframe(df.describe())
+        st.markdown("### Statistical Summary")
+        st.dataframe(df.describe(include="all"))
 
     # ------------------ PREPROCESSING OPTIONS ------------------
     st.subheader("🛠️ Preprocessing Options")
 
-    colA, colB, colC = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    with colA:
-        handle_missing = st.checkbox("Fill Missing Values")
-        outlier_cap = st.checkbox("Cap Outliers (IQR)")
+    with c1:
+        handle_missing = st.checkbox("Fill Missing Values", value=True)
+        cap_outliers = st.checkbox("Cap Outliers (IQR)")
 
-    with colB:
+    with c2:
         scale_data = st.checkbox("Standardize Numerical Features")
-        log_transform = st.checkbox("Log Transform (Skewed Data)")
+        log_transform = st.checkbox("Log Transform (Positive Values Only)")
 
-    with colC:
-        encode_cat = st.checkbox("One-Hot Encode Categoricals")
-        use_pca = st.checkbox("Apply PCA")
+    with c3:
+        encode_cat = st.checkbox("One-Hot Encode Categorical Features", value=True)
+        use_pca = st.checkbox("Apply PCA (Dimensionality Reduction)")
 
-    # ------------------ PCA SLIDER ------------------
     if use_pca:
         variance = st.slider("Variance to Preserve (%)", 80, 99, 95)
 
     # ------------------ APPLY PREPROCESSING ------------------
     if st.button("🚀 Apply Preprocessing"):
-
         data = df.copy()
 
-        # Missing Values
+        # -------- Missing Values --------
         if handle_missing:
             for col in num_cols:
-                data[col].fillna(data[col].median(), inplace=True)
+                data[col] = data[col].fillna(data[col].median())
             for col in cat_cols:
-                data[col].fillna(data[col].mode()[0], inplace=True)
+                if not data[col].mode().empty:
+                    data[col] = data[col].fillna(data[col].mode()[0])
 
-        # Outlier Capping
-        if outlier_cap:
+        # -------- Outlier Capping (IQR) --------
+        if cap_outliers:
             for col in num_cols:
                 q1 = data[col].quantile(0.25)
                 q3 = data[col].quantile(0.75)
@@ -87,50 +96,64 @@ if file:
                 upper = q3 + 1.5 * iqr
                 data[col] = np.clip(data[col], lower, upper)
 
-        # Log Transform
+        # -------- Log Transform --------
         if log_transform:
             for col in num_cols:
                 if (data[col] > 0).all():
                     data[col] = np.log1p(data[col])
 
-        # Column Transformer
+        # -------- Column Transformer --------
         transformers = []
 
-        if scale_data:
-            transformers.append(("num", StandardScaler(), num_cols))
-
-        if encode_cat:
+        if scale_data and num_cols:
             transformers.append(
-                ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)
+                ("num", StandardScaler(), num_cols)
             )
 
-        preprocessor = ColumnTransformer(transformers, remainder="drop")
+        if encode_cat and cat_cols:
+            transformers.append(
+                ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols)
+            )
 
-        pipeline_steps = [("preprocessor", preprocessor)]
+        if not transformers:
+            st.error("❌ No preprocessing step selected.")
+            st.stop()
 
-        # PCA
+        preprocessor = ColumnTransformer(
+            transformers=transformers,
+            remainder="drop"
+        )
+
+        steps = [("preprocessor", preprocessor)]
+
         if use_pca:
-            pipeline_steps.append(
+            steps.append(
                 ("pca", PCA(n_components=variance / 100))
             )
 
-        pipeline = Pipeline(pipeline_steps)
+        pipeline = Pipeline(steps)
 
+        # -------- Fit & Transform --------
         processed_data = pipeline.fit_transform(data)
 
-        st.success("Preprocessing Completed")
+        processed_df = pd.DataFrame(processed_data)
 
-        st.subheader("✅ Processed Data Preview")
-        st.write("Shape:", processed_data.shape)
-        st.dataframe(pd.DataFrame(processed_data).head())
+        # ------------------ OUTPUT ------------------
+        st.success("✅ Preprocessing Completed Successfully")
+
+        st.subheader("📦 Processed Dataset")
+        st.markdown(f"**Shape:** {processed_df.shape}")
+        st.dataframe(processed_df.head(), use_container_width=True)
 
         # ------------------ DOWNLOAD ------------------
-        processed_df = pd.DataFrame(processed_data)
-        csv = processed_df.to_csv(index=False).encode()
+        csv = processed_df.to_csv(index=False).encode("utf-8")
 
         st.download_button(
-            "⬇️ Download Cleaned Dataset",
-            csv,
-            "processed_data.csv",
-            "text/csv"
+            label="⬇️ Download Processed Dataset",
+            data=csv,
+            file_name="processed_data.csv",
+            mime="text/csv"
         )
+
+else:
+    st.info("⬆️ Upload a CSV file to begin.")
